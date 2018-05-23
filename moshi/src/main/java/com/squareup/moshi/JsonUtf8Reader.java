@@ -211,8 +211,7 @@ final class JsonUtf8Reader extends JsonReader {
       scopes[stackSize - 1] = JsonScope.NONEMPTY_ARRAY;
     } else if (peekStack == JsonScope.NONEMPTY_ARRAY) {
       // Look for a comma before the next element.
-      int c = nextNonWhitespace(true);
-      buffer.readByte(); // consume ']' or ','.
+      int c = readNextNonWhitespace();
       switch (c) {
         case ']':
           return peeked = PEEKED_END_ARRAY;
@@ -227,8 +226,7 @@ final class JsonUtf8Reader extends JsonReader {
       scopes[stackSize - 1] = JsonScope.DANGLING_NAME;
       // Look for a comma before the next element.
       if (peekStack == JsonScope.NONEMPTY_OBJECT) {
-        int c = nextNonWhitespace(true);
-        buffer.readByte(); // Consume '}' or ','.
+        int c = readNextNonWhitespace();
         switch (c) {
           case '}':
             return peeked = PEEKED_END_OBJECT;
@@ -240,23 +238,22 @@ final class JsonUtf8Reader extends JsonReader {
             throw syntaxError("Unterminated object");
         }
       }
-      int c = nextNonWhitespace(true);
+      int c = readNextNonWhitespace();
       switch (c) {
         case '"':
-          buffer.readByte(); // consume the '\"'.
           return peeked = PEEKED_DOUBLE_QUOTED_NAME;
         case '\'':
-          buffer.readByte(); // consume the '\''.
           checkLenient();
           return peeked = PEEKED_SINGLE_QUOTED_NAME;
         case '}':
           if (peekStack != JsonScope.NONEMPTY_OBJECT) {
-            buffer.readByte(); // consume the '}'.
             return peeked = PEEKED_END_OBJECT;
           } else {
+            unread(c);
             throw syntaxError("Expected name");
           }
         default:
+          unread(c);
           checkLenient();
           if (isLiteral((char) c)) {
             return peeked = PEEKED_UNQUOTED_NAME;
@@ -267,8 +264,7 @@ final class JsonUtf8Reader extends JsonReader {
     } else if (peekStack == JsonScope.DANGLING_NAME) {
       scopes[stackSize - 1] = JsonScope.NONEMPTY_OBJECT;
       // Look for a colon before the value.
-      int c = nextNonWhitespace(true);
-      buffer.readByte(); // Consume ':'.
+      int c = readNextNonWhitespace();
       switch (c) {
         case ':':
           break;
@@ -284,7 +280,7 @@ final class JsonUtf8Reader extends JsonReader {
     } else if (peekStack == JsonScope.EMPTY_DOCUMENT) {
       scopes[stackSize - 1] = JsonScope.NONEMPTY_DOCUMENT;
     } else if (peekStack == JsonScope.NONEMPTY_DOCUMENT) {
-      int c = nextNonWhitespace(false);
+      int c = peekNextNonWhitespace(false);
       if (c == -1) {
         return peeked = PEEKED_EOF;
       } else {
@@ -294,7 +290,7 @@ final class JsonUtf8Reader extends JsonReader {
       throw new IllegalStateException("JsonReader is closed");
     }
 
-    int c = nextNonWhitespace(true);
+    int c = peekNextNonWhitespace(true);
     switch (c) {
       case ']':
         if (peekStack == JsonScope.EMPTY_ARRAY) {
@@ -324,10 +320,9 @@ final class JsonUtf8Reader extends JsonReader {
       case '{':
         buffer.readByte(); // Consume '{'.
         return peeked = PEEKED_BEGIN_OBJECT;
-      default:
     }
 
-    int result = peekKeyword();
+    int result = peekKeyword(c);
     if (result != PEEKED_NONE) {
       return result;
     }
@@ -337,7 +332,7 @@ final class JsonUtf8Reader extends JsonReader {
       return result;
     }
 
-    if (!isLiteral(buffer.getByte(0))) {
+    if (!isLiteral(c)) {
       throw syntaxError("Expected value");
     }
 
@@ -345,9 +340,8 @@ final class JsonUtf8Reader extends JsonReader {
     return peeked = PEEKED_UNQUOTED;
   }
 
-  private int peekKeyword() throws IOException {
+  private int peekKeyword(int c) throws IOException {
     // Figure out which keyword we're matching against by its first character.
-    byte c = buffer.getByte(0);
     String keyword;
     String keywordUpper;
     int peeking;
@@ -957,72 +951,113 @@ final class JsonUtf8Reader extends JsonReader {
   }
 
   /**
-   * Returns the next character in the stream that is neither whitespace nor a
-   * part of a comment. When this returns, the returned character is always at
-   * {@code buffer.getByte(0)}.
+   * Consumes and returns the next character in the stream that is neither whitespace nor a part of
+   * a comment.
    */
-  private int nextNonWhitespace(boolean throwOnEof) throws IOException {
-    /*
-     * This code uses ugly local variables 'p' and 'l' representing the 'pos'
-     * and 'limit' fields respectively. Using locals rather than fields saves
-     * a few field reads for each whitespace character in a pretty-printed
-     * document, resulting in a 5% speedup. We need to flush 'p' to its field
-     * before any (potentially indirect) call to fillBuffer() and reread both
-     * 'p' and 'l' after any (potentially indirect) call to the same method.
-     */
+  private int readNextNonWhitespace() throws IOException {
+    while (true) {
+      int c = source.readByte();
+      switch (c) {
+        case '\n':
+        case ' ':
+        case '\r':
+        case '\t':
+          continue;
+
+        case '/':
+        case '#':
+          if (skipComment(c)) continue;
+          return c;
+
+        default:
+          return c;
+      }
+    }
+  }
+
+  /**
+   * Returns the next character in the stream that is neither whitespace nor a part of a comment.
+   * When this returns, the returned character is always at {@code buffer.getByte(0)}.
+   */
+  private int peekNextNonWhitespace(boolean throwOnEof) throws IOException {
     int p = 0;
     while (source.request(p + 1)) {
       int c = buffer.getByte(p++);
-      if (c == '\n' || c == ' ' || c == '\r' || c == '\t') {
-        continue;
-      }
+      switch (c) {
+        case '\n':
+        case ' ':
+        case '\r':
+        case '\t':
+          continue;
 
-      buffer.skip(p - 1);
-      if (c == '/') {
-        if (!source.request(2)) {
+        case '/':
+        case '#':
+          buffer.skip(p);
+          if (skipComment(c)) {
+            p = 0;
+            continue;
+          }
+          unread(c);
           return c;
-        }
 
-        checkLenient();
-        byte peek = buffer.getByte(1);
-        switch (peek) {
-          case '*':
-            // skip a /* c-style comment */
-            buffer.readByte(); // '/'
-            buffer.readByte(); // '*'
-            if (!skipTo("*/")) {
-              throw syntaxError("Unterminated comment");
-            }
-            buffer.readByte(); // '*'
-            buffer.readByte(); // '/'
-            p = 0;
-            continue;
-
-          case '/':
-            // skip a // end-of-line comment
-            buffer.readByte(); // '/'
-            buffer.readByte(); // '/'
-            skipToEndOfLine();
-            p = 0;
-            continue;
-
-          default:
-            return c;
-        }
-      } else if (c == '#') {
-        // Skip a # hash end-of-line comment. The JSON RFC doesn't specify this behaviour, but it's
-        // required to parse existing documents.
-        checkLenient();
-        skipToEndOfLine();
-        p = 0;
-      } else {
-        return c;
+        default:
+          buffer.skip(p - 1);
+          return c;
       }
     }
     if (throwOnEof) {
       throw new EOFException("End of input");
     } else {
       return -1;
+    }
+  }
+
+  private void unread(int c) {
+    Buffer prefix = new Buffer();
+    prefix.writeByte(c);
+    prefix.write(buffer, buffer.size());
+    buffer.write(prefix, prefix.size());
+  }
+
+  /**
+   * Returns true if a comment was skipped.
+   *
+   * @param c the character preceding the buffer.
+   */
+  private boolean skipComment(int c) throws IOException {
+    if (c == '/') {
+      if (source.exhausted()) return false;
+
+      checkLenient();
+      byte peek = buffer.getByte(0L);
+      switch (peek) {
+        case '*':
+          // skip a /* c-style comment */
+          buffer.readByte(); // '*'
+          if (!skipTo("*/")) throw syntaxError("Unterminated comment");
+          buffer.readByte(); // '*'
+          buffer.readByte(); // '/'
+          return true;
+
+        case '/':
+          // skip a // end-of-line comment
+          buffer.readByte(); // '/'
+          skipToEndOfLine();
+          return true;
+
+        default:
+          return false;
+      }
+
+    } else if (c == '#') {
+      // Skip a # hash end-of-line comment. The JSON RFC doesn't specify this behaviour, but it's
+      // required to parse existing documents.
+      checkLenient();
+      skipToEndOfLine();
+      return true;
+
+    } else {
+      return false;
     }
   }
 

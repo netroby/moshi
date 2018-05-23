@@ -381,6 +381,7 @@ public final class JsonUtf8ReaderTest {
     }
   }
 
+  @Ignore // https://github.com/square/okio/issues/458
   @Test public void prematureEndOfInput() throws IOException {
     JsonReader reader = newReader("{\"a\":true,");
     reader.beginObject();
@@ -1140,6 +1141,7 @@ public final class JsonUtf8ReaderTest {
     reader.endArray();
   }
 
+  @Ignore // https://github.com/square/okio/issues/458
   @Test public void veryLongUnterminatedString() throws IOException {
     char[] stringChars = new char[1024 * 16];
     Arrays.fill(stringChars, 'x');
@@ -1181,6 +1183,7 @@ public final class JsonUtf8ReaderTest {
     }
   }
 
+  @Ignore // https://github.com/square/okio/issues/458
   @Test public void malformedDocuments() throws IOException {
     assertDocument("{]", BEGIN_OBJECT, JsonEncodingException.class);
     assertDocument("{,", BEGIN_OBJECT, JsonEncodingException.class);
